@@ -1,0 +1,20 @@
+[
+    { "key": "ff_enabled", "default": "1", "report": "full" },
+    { "key": "ff_api_base_url", "default": "https://api.ffapi.net", "report": "full" },
+    { "key": "ff_api_region", "default": "global", "report": "full" },
+    { "key": "ff_allow_global_fallback", "default": "0", "report": "full" },
+    { "key": "ff_control_base_url", "default": "https://control.ffapi.net", "report": "full" },
+    { "key": "ff_preferred_endpoint", "default": "", "report": "full" },
+    { "key": "ff_timeout", "default": "5", "report": "full" },
+    { "key": "ff_fail_open", "default": "1", "report": "full" },
+    { "key": "ff_send_ham", "default": "1", "report": "full" },
+    { "key": "ff_block_reject_action", "default": "reject", "report": "full" },
+    { "key": "ff_registration_block_action", "default": "reject", "report": "full" },
+    { "key": "ff_trusted_proxies", "default": "", "report": "full" },
+    { "key": "ff_debug_log", "default": "0", "report": "none" },
+    { "key": "ff_bootstrap_token", "default": "", "report": "none" },
+    { "key": "ff_api_key", "default": "", "report": "none" },
+    { "key": "ff_site_id", "default": "", "report": "none" },
+    { "key": "ff_endpoint_state", "default": "{}", "report": "none" },
+    { "key": "ff_registration_email", "default": "", "report": "none" }
+]

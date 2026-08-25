@@ -1,0 +1,17 @@
+{
+  "Fortress": {
+        "type": "MemberListenerType",
+        "classname": "IPS\\forumfortress\\listeners\\Fortress",
+        "extends": "IPS\\Member"
+    },
+  "ForumTopic": {
+        "type": "ContentListenerType",
+        "classname": "IPS\\forumfortress\\listeners\\ForumTopic",
+        "extends": "IPS\\forums\\Topic"
+    },
+  "ForumPost": {
+        "type": "ContentListenerType",
+        "classname": "IPS\\forumfortress\\listeners\\ForumPost",
+        "extends": "IPS\\forums\\Topic\\Post"
+    }
+}

@@ -1,0 +1,10 @@
+{
+    "forumfortress": {
+        "settings": {
+            "tab": "members",
+            "controller": "settings",
+            "do": "",
+            "restriction": "settings_manage"
+        }
+    }
+}

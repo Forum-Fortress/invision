@@ -1,0 +1,22 @@
+{
+    "core": {
+        "Forms": {
+            "Registration": "IPS\\forumfortress\\extensions\\core\\Forms\\Registration"
+        },
+        "ContactUs": {
+            "ForumFortress": "IPS\\forumfortress\\extensions\\core\\ContactUs\\ForumFortress"
+        },
+        "ApprovalReason": {
+            "ForumFortress": "IPS\\forumfortress\\extensions\\core\\ApprovalReason\\ForumFortress"
+        },
+        "Uninstall": {
+            "Cleanup": "IPS\\forumfortress\\extensions\\core\\Uninstall\\Cleanup"
+        },
+        "UIComment": {
+            "ForumPost": "IPS\\forumfortress\\extensions\\core\\UIComment\\ForumPost"
+        },
+        "UIItem": {
+            "ForumTopic": "IPS\\forumfortress\\extensions\\core\\UIItem\\ForumTopic"
+        }
+    }
+}
