@@ -53,13 +53,10 @@ if ( !defined( '\IPS\SUITE_UNIQUE_KEY' ) )
 class Client
 {
 	public const PLATFORM = 'invision';
-	public const PLUGIN_VERSION = '1.3.1';
+	public const PLUGIN_VERSION = '1.3.6';
+	public const CONTROL_PLANE_BASE_URL = 'https://fortress.ffapi.net';
 	/** Minimum seconds between full hourly sync runs (task + HTTP traffic share this gate). */
 	protected const HOURLY_SYNC_MIN_INTERVAL = 540;
-	protected const ENDPOINT_HEALTH_REFRESH_SECONDS = 3600;
-	protected const ENDPOINT_HEALTH_DEGRADED_REFRESH_SECONDS = 300;
-	protected const ENDPOINT_HEALTH_SLOW_TRIGGER_MS = 100;
-	protected const ENDPOINT_HEALTH_RECOVERY_MS = 80;
 	protected const ENDPOINT_REFRESH_REQUEST_MAX_DELAY_SECONDS = 60;
 	protected const CONNECTION_TEST_TIMEOUT_SECONDS = 2;
 	protected const CONNECTION_TEST_TOTAL_BUDGET_SECONDS = 5;
@@ -194,11 +191,6 @@ class Client
 
 	public static function baseUrl(): string
 	{
-		$legacy = (string) ( Settings::i()->ff_api_base_url ?? '' );
-		if ( !isset( Settings::i()->ff_api_region ) && \FfApiResilience::isLocalDevelopmentBaseUrl( $legacy ) )
-		{
-			return static::normaliseBaseUrl( $legacy );
-		}
 		return \FfApiResilience::apiBaseUrlForRegion( static::apiRegion() );
 	}
 
@@ -215,43 +207,7 @@ class Client
 
 	public static function controlBaseUrl(): string
 	{
-		$configured = static::normaliseBaseUrl( trim( (string) Settings::i()->ff_control_base_url ) );
-		if ( $configured !== '' )
-		{
-			return $configured;
-		}
-
-		return static::deriveControlPlaneBaseFromManual( static::baseUrl() );
-	}
-
-	protected static function preferredBaseOverride(): string
-	{
-		return static::normaliseBaseUrl( trim( (string) ( Settings::i()->ff_preferred_endpoint ?? '' ) ) );
-	}
-
-	protected static function deriveControlPlaneBaseFromManual( string $manual ): string
-	{
-		$manual = static::normaliseBaseUrl( $manual );
-		if ( $manual === '' )
-		{
-			return '';
-		}
-		$host = parse_url( $manual, PHP_URL_HOST );
-		if ( !is_string( $host ) || $host === '' )
-		{
-			return '';
-		}
-		$host = strtolower( $host );
-		if ( strpos( $host, 'api.' ) === 0 && strpos( $host, '.' ) !== FALSE )
-		{
-			return static::normaliseBaseUrl( 'https://control.' . substr( $host, 4 ) );
-		}
-		if ( strpos( $host, 'control.' ) === 0 )
-		{
-			return $manual;
-		}
-
-		return '';
+		return static::CONTROL_PLANE_BASE_URL;
 	}
 
 	protected static function hotFailoverApiBaseUrl(): string
@@ -504,31 +460,24 @@ class Client
 		return is_string( $host ) && strpos( strtolower( $host ), 'api.' ) === 0;
 	}
 
-	protected static function shouldProbeEndpointHealth( string $baseUrl, array $state ): bool
-	{
-		$baseUrl = static::normaliseBaseUrl( $baseUrl );
-		if ( $baseUrl === '' )
-		{
-			return FALSE;
-		}
-		$endpointMeta = is_array( $state['endpoint_meta'] ?? NULL ) ? $state['endpoint_meta'] : [];
-		$meta = isset( $endpointMeta[ $baseUrl ] ) && is_array( $endpointMeta[ $baseUrl ] ) ? $endpointMeta[ $baseUrl ] : [];
-		$role = isset( $meta['role'] ) ? (string) $meta['role'] : NULL;
-		if ( static::isCatalogBackupEndpointUrl( $baseUrl, $role ) )
-		{
-			return !static::edgesHealthyForCheckTraffic( $state );
-		}
-		if ( !static::isSharedApiRoundRobinBase( $baseUrl ) )
-		{
-			return TRUE;
-		}
-
-		return FALSE;
-	}
-
 	protected static function normaliseBaseUrl( string $value ): string
 	{
-		return rtrim( trim( $value ), '/' );
+		$value = rtrim( trim( $value ), '/' );
+		$parts = parse_url( $value );
+		if (
+			!is_array( $parts )
+			|| strtolower( (string) ( $parts['scheme'] ?? '' ) ) !== 'https'
+			|| trim( (string) ( $parts['host'] ?? '' ) ) === ''
+			|| isset( $parts['user'] )
+			|| isset( $parts['pass'] )
+			|| isset( $parts['query'] )
+			|| isset( $parts['fragment'] )
+		)
+		{
+			return '';
+		}
+
+		return $value;
 	}
 
 	public static function validateConfiguredBaseUrl( string $value ): void
@@ -541,7 +490,7 @@ class Client
 		$parts = parse_url( $value );
 		if (
 			!is_array( $parts )
-			|| !in_array( strtolower( (string) ( $parts['scheme'] ?? '' ) ), [ 'http', 'https' ], TRUE )
+			|| strtolower( (string) ( $parts['scheme'] ?? '' ) ) !== 'https'
 			|| trim( (string) ( $parts['host'] ?? '' ) ) === ''
 			|| isset( $parts['user'] )
 			|| isset( $parts['pass'] )
@@ -616,7 +565,7 @@ class Client
 		$parts = parse_url( $value );
 		if (
 			!is_array( $parts )
-			|| !in_array( strtolower( (string) ( $parts['scheme'] ?? '' ) ), [ 'http', 'https' ], TRUE )
+			|| strtolower( (string) ( $parts['scheme'] ?? '' ) ) !== 'https'
 			|| trim( (string) ( $parts['host'] ?? '' ) ) === ''
 			|| isset( $parts['user'] )
 			|| isset( $parts['pass'] )
@@ -728,6 +677,10 @@ class Client
 		{
 			return 'portal.' . substr( $host, 8 );
 		}
+		if ( $host === 'fortress.ffapi.net' )
+		{
+			return 'portal.ffapi.net';
+		}
 		return $host;
 	}
 
@@ -747,30 +700,10 @@ class Client
 		return FALSE;
 	}
 
-	/** Public endpoints must use TLS. Plain HTTP is limited to local/private test networks. */
+	/** Every plugin endpoint uses TLS, including local and private origins. */
 	protected static function endpointTransportIsSafe( array $parts ): bool
 	{
-		$scheme = strtolower( trim( (string) ( $parts['scheme'] ?? '' ) ) );
-		if ( $scheme === 'https' )
-		{
-			return TRUE;
-		}
-		if ( $scheme !== 'http' )
-		{
-			return FALSE;
-		}
-
-		$host = strtolower( trim( (string) ( $parts['host'] ?? '' ) ) );
-		if ( $host === 'localhost' || $host === 'localhost.localdomain' )
-		{
-			return TRUE;
-		}
-		if ( filter_var( $host, FILTER_VALIDATE_IP ) === FALSE )
-		{
-			return FALSE;
-		}
-
-		return filter_var( $host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE ) === FALSE;
+		return strtolower( trim( (string) ( $parts['scheme'] ?? '' ) ) ) === 'https';
 	}
 
 	protected static function effectiveEndpointPort( array $parts ): int
@@ -787,7 +720,7 @@ class Client
 	protected static function isTrustedEndpointBase( string $baseUrl ): bool
 	{
 		$parts = parse_url( static::normaliseBaseUrl( $baseUrl ) );
-		if ( !is_array( $parts ) || !in_array( strtolower( (string) ( $parts['scheme'] ?? '' ) ), [ 'http', 'https' ], TRUE ) )
+		if ( !is_array( $parts ) || strtolower( (string) ( $parts['scheme'] ?? '' ) ) !== 'https' )
 		{
 			return FALSE;
 		}
@@ -991,8 +924,16 @@ class Client
 
 	public static function bootstrapIfNeeded(): ?array
 	{
-		if ( !static::isEnabled() or static::apiKey() !== '' )
+		if ( !static::isEnabled() )
 		{
+			return NULL;
+		}
+		if ( static::apiKey() !== '' )
+		{
+			if ( trim( (string) Settings::i()->ff_site_id ) === '' )
+			{
+				return static::siteStatus( self::CONNECTION_TEST_TIMEOUT_SECONDS );
+			}
 			return NULL;
 		}
 
@@ -2311,6 +2252,20 @@ class Client
 		{
 			return NULL;
 		}
+		if ( \FfApiResilience::apiRegionIsLocked( static::apiRegion() ) )
+		{
+			$timeout = max( 1, $timeoutOverride ?? self::CONNECTION_TEST_TIMEOUT_SECONDS );
+			foreach ( \FfApiResilience::regionLockedCheckBases( static::apiRegion(), static::allowGlobalEmergencyFallback() ) as $base )
+			{
+				$health = static::rawRequest( 'GET', $base, '/health', [], $timeout );
+				if ( ( $health['status'] ?? 0 ) >= 200 && ( $health['status'] ?? 0 ) < 300
+					&& is_array( $health['data'] ?? NULL ) )
+				{
+					return $health['data'];
+				}
+			}
+			return NULL;
+		}
 
 		return static::request( 'GET', '/health', [], $timeoutOverride ?? self::CONNECTION_TEST_TIMEOUT_SECONDS );
 	}
@@ -2344,6 +2299,7 @@ class Client
 		], $timeoutOverride ?? self::CONNECTION_TEST_TIMEOUT_SECONDS );
 		if ( is_array( $response ) )
 		{
+			static::persistIdentity( $response );
 			static::cacheApiSnapshot( 'site_status', $response );
 		}
 
@@ -2641,7 +2597,7 @@ class Client
 		$parts = parse_url( $value );
 		if (
 			!is_array( $parts )
-			|| !in_array( strtolower( (string) ( $parts['scheme'] ?? '' ) ), [ 'http', 'https' ], TRUE )
+			|| strtolower( (string) ( $parts['scheme'] ?? '' ) ) !== 'https'
 			|| trim( (string) ( $parts['host'] ?? '' ) ) === ''
 			|| isset( $parts['user'] )
 			|| isset( $parts['pass'] )
@@ -3713,297 +3669,98 @@ class Client
 		$lastRespondedBase = trim( (string) ( $state['last_responded'] ?? '' ) );
 
 		return [
-			'preferred' => (string) ( $state['preferred'] ?? static::baseUrl() ),
+			// Compatibility key for existing admin templates. The route is no
+			// longer selected from plugin-maintained preference state.
+			'preferred' => static::normaliseBaseUrl( static::baseUrl() ),
 			'last_responded' => $lastRespondedNode !== '' ? $lastRespondedNode : $lastRespondedBase,
 			'endpoints_count' => is_array( $state['endpoints'] ?? NULL ) ? count( $state['endpoints'] ) : 1,
-			'last_health_at' => (int) ( $state['last_health_at'] ?? 0 ),
+			'last_health_at' => (int) ( $state['catalog_fetched_at'] ?? 0 ),
 			'last_site_ping_at' => (int) ( $state['last_site_ping_at'] ?? 0 ),
-			'preferred_missing' => trim( (string) ( $state['preferred_missing'] ?? '' ) ),
+			'preferred_missing' => '',
 		];
-	}
-
-	protected static function edgesHealthyForCheckTraffic( array $state ): bool
-	{
-		$healthMs = is_array( $state['health_ms'] ?? NULL ) ? $state['health_ms'] : [];
-		$endpointMeta = is_array( $state['endpoint_meta'] ?? NULL ) ? $state['endpoint_meta'] : [];
-
-		return \FfApiResilience::edgesHealthyForCheckTraffic(
-			$healthMs,
-			$endpointMeta,
-			static function ( string $base, ?string $role ): bool {
-				return static::isCatalogBackupEndpointUrl( $base, $role );
-			}
-		);
 	}
 
 	public static function endpointHealthDisplayLabel( string $endpointUrl, ?array $state = NULL ): string
 	{
 		$state = $state ?? static::loadEndpointState();
 		$endpointUrl = static::normaliseBaseUrl( $endpointUrl );
-		if ( $endpointUrl === '' )
+		if ( $endpointUrl === static::normaliseBaseUrl( static::baseUrl() ) )
 		{
-			return 'unreachable';
+			return 'GeoDNS primary';
 		}
-		$healthMs = is_array( $state['health_ms'] ?? NULL ) ? $state['health_ms'] : [];
-		$ms = array_key_exists( $endpointUrl, $healthMs ) ? $healthMs[ $endpointUrl ] : NULL;
-		if ( is_int( $ms ) && $ms >= 0 )
+		$meta = is_array( $state['endpoint_meta'][ $endpointUrl ] ?? NULL ) ? $state['endpoint_meta'][ $endpointUrl ] : [];
+		$role = strtolower( (string) ( $meta['role'] ?? '' ) );
+		if ( static::isCatalogBackupEndpointUrl( $endpointUrl, $role ) )
 		{
-			return $ms . ' ms';
+			return 'control fallback';
 		}
-		$endpointMeta = is_array( $state['endpoint_meta'] ?? NULL ) ? $state['endpoint_meta'] : [];
-		$meta = isset( $endpointMeta[ $endpointUrl ] ) && is_array( $endpointMeta[ $endpointUrl ] ) ? $endpointMeta[ $endpointUrl ] : [];
-		$role = isset( $meta['role'] ) ? (string) $meta['role'] : NULL;
-		if ( !static::shouldProbeEndpointHealth( $endpointUrl, $state ) )
-		{
-			if ( static::isSharedApiRoundRobinBase( $endpointUrl ) )
-			{
-				return 'shared route';
-			}
-			if ( static::isCatalogBackupEndpointUrl( $endpointUrl, $role ) )
-			{
-				if ( static::edgesHealthyForCheckTraffic( $state ) )
-				{
-					if ( !empty( $meta['check_ready'] ) )
-					{
-						return 'standby (check-ready backup)';
-					}
-
-					return 'standby (not used for checks)';
-				}
-
-				return 'standby (backup)';
-			}
-
-			return 'not probed';
-		}
-
-		return 'unreachable';
+		return array_key_exists( 'check_ready', $meta ) && empty( $meta['check_ready'] )
+			? 'catalog standby'
+			: 'catalog fallback';
 	}
-
 	/**
 	 * @return list<array{endpoint: string, latency: string, is_preferred: bool}>
 	 */
 	public static function buildEndpointLatencyRows(): array
 	{
 		$state = static::loadEndpointState();
-		$summary = static::endpointStateSummary();
-		$preferred = static::normaliseBaseUrl( (string) ( $summary['preferred'] ?? '' ) );
-		$endpointList = is_array( $state['endpoints'] ?? NULL ) ? $state['endpoints'] : [];
-		$healthMs = is_array( $state['health_ms'] ?? NULL ) ? $state['health_ms'] : [];
-		$displayTargets = array_values( array_unique( array_merge( $endpointList, array_keys( $healthMs ) ) ) );
-		sort( $displayTargets );
+		$primary = static::normaliseBaseUrl( static::baseUrl() );
+		$targets = \FfApiResilience::uniqueOrderedBases(
+			$primary !== '' ? [ $primary ] : [],
+			is_array( $state['endpoints'] ?? NULL ) ? $state['endpoints'] : []
+		);
 		$rows = [];
-		foreach ( $displayTargets as $endpoint )
+		foreach ( $targets as $endpointUrl )
 		{
-			$endpointUrl = (string) $endpoint;
 			$rows[] = [
 				'endpoint' => $endpointUrl,
 				'latency' => static::endpointHealthDisplayLabel( $endpointUrl, $state ),
-				'is_preferred' => $endpointUrl === $preferred,
+				'is_preferred' => $endpointUrl === $primary,
 			];
 		}
-
 		return $rows;
 	}
-
 	public static function refreshEndpointCatalogAndHealth( bool $force = FALSE, ?int $probeTimeout = NULL ): void
 	{
-		if ( !static::isEnabled() )
+		if ( !static::enabled() )
 		{
 			return;
 		}
-
-		$manual = static::normaliseBaseUrl( static::baseUrl() );
-		if ( $manual === '' )
+		$primary = static::normaliseBaseUrl( static::baseUrl() );
+		if ( $primary === '' )
 		{
 			return;
 		}
-
 		$state = static::loadEndpointState();
-		$now = time();
-		$refreshRequestedAt = (int) ( $state['refresh_requested_at'] ?? 0 );
-		$lastHealthAt = (int) ( $state['last_health_at'] ?? 0 );
-		if (
-			!$force
-			&& $refreshRequestedAt > 0
-			&& $refreshRequestedAt > $lastHealthAt
-			&& ( $now - $refreshRequestedAt ) >= self::ENDPOINT_REFRESH_REQUEST_MAX_DELAY_SECONDS
-		)
-		{
-			$force = TRUE;
-		}
-		$forceHealthRefresh = FALSE;
 		if ( $force )
 		{
 			$state['catalog_fetched_at'] = 0;
-			static::invalidateEndpointHealthState( $state );
-			$state['refresh_requested_at'] = 0;
-			$forceHealthRefresh = TRUE;
+			static::saveEndpointState( $state );
 		}
-		$previousEndpoints = is_array( $state['endpoints'] ?? NULL ) ? $state['endpoints'] : [];
-
-		$dayKey = gmdate( 'Y-m-d', $now );
-
-		if ( \FfApiResilience::isEndpointCatalogStale( $state ) )
+		if ( $force || \FfApiResilience::isEndpointCatalogStale( $state ) )
 		{
-			if ( !static::fetchNodeEndpointsCatalog( $force, $probeTimeout ) )
-			{
-				$state['catalog_fetched_at'] = $now;
-				$state['endpoints'] = [ $manual ];
-			}
-			else
-			{
-				$state = static::loadEndpointState();
-				if ( $forceHealthRefresh )
-				{
-					static::invalidateEndpointHealthState( $state );
-				}
-			}
+			static::fetchNodeEndpointsCatalog( $force, $probeTimeout );
+			$state = static::loadEndpointState();
 		}
-
-		$list = $state['endpoints'] ?? [];
-		if ( !is_array( $list ) )
-		{
-			$list = [];
-		}
-		$state['endpoints'] = static::normaliseAndSanitiseEndpoints( $list, $manual );
-		$preferredOverride = static::preferredBaseOverride();
-		if ( $preferredOverride !== '' )
-		{
-			$withOverride = is_array( $state['endpoints'] ) ? $state['endpoints'] : [];
-			$withOverride[] = $preferredOverride;
-			$state['endpoints'] = static::normaliseAndSanitiseEndpoints( $withOverride, $manual );
-		}
-		if ( !$state['endpoints'] )
-		{
-			$state['endpoints'] = [ $manual ];
-		}
-		if (
-			!$forceHealthRefresh
-			&& static::endpointCatalogChanged( $previousEndpoints, is_array( $state['endpoints'] ) ? $state['endpoints'] : [] )
-		)
-		{
-			static::invalidateEndpointHealthState( $state );
-		}
-
-		$lastHealth = (int) ( $state['last_health_at'] ?? 0 );
-		$healthDay = (string) ( $state['health_day'] ?? '' );
-		$healthRefreshInterval = static::endpointHealthRefreshIntervalSeconds( $state );
-		if ( $healthDay !== $dayKey || ( $now - $lastHealth ) > $healthRefreshInterval )
-		{
-			$latencies = [];
-			$candidates = is_array( $state['endpoints'] ) ? $state['endpoints'] : [];
-			$candidates = array_values( array_unique( array_map( static fn( $u ) => static::normaliseBaseUrl( (string) $u ), $candidates ) ) );
-			$candidates = array_values( array_filter( $candidates, static fn( $u ) => $u !== '' ) );
-			if ( $manual !== '' && !in_array( $manual, $candidates, TRUE ) && static::shouldProbeEndpointHealth( $manual, $state ) )
-			{
-				$candidates[] = $manual;
-			}
-			$endpointMeta = is_array( $state['endpoint_meta'] ?? NULL ) ? $state['endpoint_meta'] : [];
-			$probeHealthMs = [];
-			foreach ( is_array( $state['health_ms'] ?? NULL ) ? $state['health_ms'] : [] as $probeBase => $probeMs )
-			{
-				$normalisedProbeBase = static::normaliseBaseUrl( (string) $probeBase );
-				if ( $normalisedProbeBase === '' )
-				{
-					continue;
-				}
-				$probeHealthMs[ $normalisedProbeBase ] = is_int( $probeMs ) ? $probeMs : NULL;
-			}
-			$isBackup = function ( string $base, ?string $role ): bool {
-				return static::isCatalogBackupEndpointUrl( $base, $role );
-			};
-			$candidates = \FfApiResilience::sortBasesByHealthyLatency( $candidates, $probeHealthMs, $endpointMeta, $isBackup );
-			$startedAt = microtime( TRUE );
-			foreach ( $candidates as $base )
-			{
-				if ( ( microtime( TRUE ) - $startedAt ) >= self::CONNECTION_TEST_TOTAL_BUDGET_SECONDS )
-				{
-					$state['health_timed_out'] = TRUE;
-					break;
-				}
-				if ( !static::shouldProbeEndpointHealth( $base, $state ) )
-				{
-					continue;
-				}
-				$t0 = microtime( TRUE );
-				$timeout = max( 1, $probeTimeout ?? \FfApiResilience::RUNTIME_CHECK_ENDPOINT_TIMEOUT_SECONDS );
-				$hr = static::rawRequest( 'GET', $base, '/health', [], $timeout );
-				$ms = NULL;
-				if ( ( $hr['status'] ?? 0 ) >= 200 && ( $hr['status'] ?? 0 ) < 300 )
-				{
-					$ms = (int) round( ( microtime( TRUE ) - $t0 ) * 1000 );
-					$cr = static::rawRequest( 'GET', $base, '/v1/check-ready', [], $timeout );
-					$liveReady = ( $cr['status'] ?? 0 ) >= 200 && ( $cr['status'] ?? 0 ) < 300;
-					if ( !isset( $endpointMeta[ $base ] ) || !is_array( $endpointMeta[ $base ] ) )
-					{
-						$endpointMeta[ $base ] = [];
-					}
-					$endpointMeta[ $base ]['check_ready'] = $liveReady;
-					if ( !$liveReady )
-					{
-						$ms = NULL;
-					}
-				}
-				$latencies[ $base ] = $ms;
-			}
-			$state['endpoint_meta'] = $endpointMeta;
-			$best = \FfApiResilience::resolvePreferredHealthyBase(
-				array_keys( $latencies ),
-				$latencies,
-				$endpointMeta,
-				$isBackup,
-				$manual
-			);
-			$currentPreferred = static::normaliseBaseUrl( (string) ( $state['preferred'] ?? $manual ) );
-			$currentPreferredHealthy = \FfApiResilience::isHealthyLatency( $latencies[ $currentPreferred ] ?? NULL );
-			if ( $currentPreferred !== '' && $best !== '' && $best !== $currentPreferred && $currentPreferredHealthy )
-			{
-				$candidate = static::normaliseBaseUrl( (string) ( $state['preferred_candidate'] ?? '' ) );
-				$streak = $candidate === $best ? ( (int) ( $state['preferred_candidate_streak'] ?? 0 ) + 1 ) : 1;
-				$state['preferred_candidate'] = $best;
-				$state['preferred_candidate_streak'] = $streak;
-				if ( $streak < 2 )
-				{
-					$best = $currentPreferred;
-				}
-			}
-			else
-			{
-				unset( $state['preferred_candidate'], $state['preferred_candidate_streak'] );
-			}
-			$bestMs = \FfApiResilience::isHealthyLatency( $latencies[ $best ] ?? NULL )
-				? (int) $latencies[ $best ]
-				: 999999;
-			$hasHealthy = FALSE;
-			foreach ( $latencies as $ms )
-			{
-				if ( \FfApiResilience::isHealthyLatency( $ms ) )
-				{
-					$hasHealthy = TRUE;
-					break;
-				}
-			}
-			$state['last_health_at'] = $now;
-			$state['health_day'] = $dayKey;
-			$state['health_ms'] = $latencies;
-			$state['preferred'] = $best;
-			$wasSlow = !empty( $state['slow_health_mode'] );
-			$isSlow = !$hasHealthy
-				|| $bestMs > self::ENDPOINT_HEALTH_SLOW_TRIGGER_MS
-				|| ( $wasSlow && $bestMs > self::ENDPOINT_HEALTH_RECOVERY_MS );
-			$state['slow_health_mode'] = $isSlow;
-			$state['best_latency_ms'] = $hasHealthy ? (int) $bestMs : 0;
-			$state['refresh_requested_at'] = 0;
-		}
-		if ( $preferredOverride !== '' )
-		{
-			$state['preferred'] = $preferredOverride;
-		}
-
+		$endpoints = is_array( $state['endpoints'] ?? NULL ) ? $state['endpoints'] : [];
+		$state['endpoints'] = static::normaliseAndSanitiseEndpoints( $endpoints, $primary );
+		$state['preferred'] = $primary;
+		$state['refresh_requested_at'] = 0;
+		unset(
+			$state['health_day'],
+			$state['health_ms'],
+			$state['last_health_at'],
+			$state['health_timed_out'],
+			$state['slow_health_mode'],
+			$state['best_latency_ms'],
+			$state['preferred_candidate'],
+			$state['preferred_candidate_streak'],
+			$state['preferred_missing'],
+			$state['preferred_missing_at'],
+			$state['suppressed_endpoints']
+		);
 		static::saveEndpointState( $state );
 	}
-
 	/**
 	 * @param list<mixed> $endpoints
 	 * @return list<string>
@@ -4025,29 +3782,30 @@ class Client
 	}
 
 	/**
-	 * Routing: catalog from control; health probes edges only; checks on check_ready edges;
-	 * control for checks only when control_check_fallback or no healthy edge. api.ffapi.net is
-	 * legacy shared DNS (edges proxy health/catalog); do not treat control as down when two edges
-	 * are healthy (see edgesHealthyForCheckTraffic / shouldProbeEndpointHealth).
+	 * The catalog controls whether the concrete control fallback may serve checks.
+	 * Normal check routing itself always starts at the GeoDNS hostname.
 	 */
 	protected static function baseUrlMayServeCheckTraffic( string $baseUrl ): bool
 	{
 		$baseUrl = static::normaliseBaseUrl( $baseUrl );
-		if ( $baseUrl === '' )
-		{
-			return FALSE;
-		}
 		$control = static::normaliseBaseUrl( static::controlBaseUrl() );
-		if ( $control !== '' && $baseUrl === $control )
+		if ( $baseUrl === '' || $baseUrl !== $control )
 		{
-			$state = static::loadEndpointState();
-			return !empty( $state['control_check_fallback'] ) || !static::edgesHealthyForCheckTraffic( $state );
+			return $baseUrl !== '';
 		}
-		$manual = static::normaliseBaseUrl( static::baseUrl() );
-		if ( $manual !== '' && $baseUrl === $manual )
+		$state = static::loadEndpointState();
+		if ( !empty( $state['control_check_fallback'] ) )
 		{
-			$host = parse_url( $manual, PHP_URL_HOST );
-			if ( is_string( $host ) && strpos( strtolower( $host ), 'api.' ) === 0 )
+			return TRUE;
+		}
+		foreach ( is_array( $state['endpoint_meta'] ?? NULL ) ? $state['endpoint_meta'] : [] as $url => $meta )
+		{
+			if ( !is_array( $meta ) || empty( $meta['check_ready'] ) )
+			{
+				continue;
+			}
+			$role = isset( $meta['role'] ) ? (string) $meta['role'] : NULL;
+			if ( !static::isCatalogBackupEndpointUrl( (string) $url, $role ) )
 			{
 				return FALSE;
 			}
@@ -4057,21 +3815,21 @@ class Client
 
 	protected static function getOrderedBasesForRequests( ?string $requestPath = NULL ): array
 	{
-		$manual = static::normaliseBaseUrl( static::baseUrl() );
-		if ( $manual === '' )
+		$primary = static::normaliseBaseUrl( static::baseUrl() );
+		if ( $primary === '' )
 		{
 			return [];
 		}
 		$state = static::loadEndpointState();
-		if ( is_string( $requestPath ) && strpos( $requestPath, '/v1/check' ) === 0 && \FfApiResilience::apiRegionIsLocked( static::apiRegion() ) && !static::isOfflineApiKey() )
+		$isCheck = is_string( $requestPath ) && strpos( $requestPath, '/v1/check' ) === 0;
+		if ( $isCheck && \FfApiResilience::apiRegionIsLocked( static::apiRegion() ) && !static::isOfflineApiKey() )
 		{
-			return \FfApiResilience::regionLockedCheckBases( static::apiRegion(), static::allowGlobalEmergencyFallback() );
+			return \FfApiResilience::regionLockedCheckBases(
+				static::apiRegion(),
+				static::allowGlobalEmergencyFallback()
+			);
 		}
-		if (
-			is_string( $requestPath )
-			&& strpos( $requestPath, '/v1/check' ) === 0
-			&& static::isOfflineApiKey()
-		)
+		if ( $isCheck && static::isOfflineApiKey() )
 		{
 			$pinned = \FfApiResilience::offlinePinnedCheckBases( $state );
 			if ( $pinned && static::isTrustedEndpointBase( (string) $pinned[0] ) )
@@ -4093,209 +3851,39 @@ class Client
 				return $bases;
 			}
 		}
-		if ( is_string( $requestPath ) && strpos( $requestPath, '/v1/check' ) === 0 )
-		{
-			$preferred = static::normaliseBaseUrl( (string) ( static::preferredBaseOverride() ?: ( $state['preferred'] ?? $manual ) ) );
-			$existing = [];
-			foreach ( is_array( $state['endpoints'] ?? NULL ) ? $state['endpoints'] : [] as $base )
-			{
-				$base = static::normaliseBaseUrl( (string) $base );
-				if ( $base !== '' && static::isTrustedEndpointBase( $base ) )
-				{
-					$existing[] = $base;
-				}
-			}
-			if ( !static::isTrustedEndpointBase( $preferred ) )
-			{
-				$preferred = $manual;
-			}
-			$endpointMeta = is_array( $state['endpoint_meta'] ?? NULL ) ? $state['endpoint_meta'] : [];
-			$healthMs = [];
-			foreach ( is_array( $state['health_ms'] ?? NULL ) ? $state['health_ms'] : [] as $base => $ms )
-			{
-				$base = static::normaliseBaseUrl( (string) $base );
-				if ( $base !== '' )
-				{
-					$healthMs[ $base ] = is_int( $ms ) ? $ms : NULL;
-				}
-			}
-			$isBackup = function ( string $base, ?string $role ): bool {
-				return static::isCatalogBackupEndpointUrl( $base, $role );
-			};
-			$existing = \FfApiResilience::sortBasesByHealthyLatency( $existing, $healthMs, $endpointMeta, $isBackup );
-			$existing = array_values( array_filter( $existing, function ( $base ) use ( $healthMs, $endpointMeta ) {
-				$ms = array_key_exists( $base, $healthMs ) && is_int( $healthMs[ $base ] ) ? $healthMs[ $base ] : NULL;
-				return \FfApiResilience::endpointEligibleForCheckTraffic( $endpointMeta, (string) $base, $ms );
-			} ) );
-			$hotApi = static::hotFailoverApiBaseUrl();
-			$control = static::normaliseBaseUrl( static::controlBaseUrl() );
-			$ordered = \FfApiResilience::uniqueOrderedBases(
-				$preferred !== '' ? [ $preferred ] : [],
-				$existing,
-				$hotApi !== '' ? [ $hotApi ] : [],
-				$control !== '' && static::baseUrlMayServeCheckTraffic( $control ) ? [ $control ] : []
-			);
-			$unsuppressed = array_values( array_filter( $ordered, static fn( $base ) => !static::isEndpointSuppressed( (string) $base, $state ) ) );
-			return $unsuppressed ?: $ordered;
-		}
-		$refreshRequestedAt = (int) ( $state['refresh_requested_at'] ?? 0 );
-		$lastHealthAt = (int) ( $state['last_health_at'] ?? 0 );
-		if (
-			$refreshRequestedAt > 0
-			&& $refreshRequestedAt > $lastHealthAt
-			&& ( time() - $refreshRequestedAt ) >= self::ENDPOINT_REFRESH_REQUEST_MAX_DELAY_SECONDS
-		)
-		{
-			try
-			{
-				static::refreshEndpointCatalogAndHealth( TRUE );
-				$state = static::loadEndpointState();
-			}
-			catch ( Throwable $e )
-			{
-			}
-		}
-		$endpoints = $state['endpoints'] ?? NULL;
-		if ( !is_array( $endpoints ) || !$endpoints )
-		{
-			$endpoints = [ $manual ];
-		}
-		$endpoints = array_values( array_unique( array_map( static fn( $u ) => static::normaliseBaseUrl( (string) $u ), $endpoints ) ) );
-		$endpoints = array_values( array_filter( $endpoints, static fn( $u ) => $u !== '' && static::isTrustedEndpointBase( $u ) ) );
-		$endpointMeta = is_array( $state['endpoint_meta'] ?? NULL ) ? $state['endpoint_meta'] : [];
-		$healthMs = is_array( $state['health_ms'] ?? NULL ) ? $state['health_ms'] : [];
-		$latencyByBase = [];
-		foreach ( $healthMs as $base => $ms )
-		{
-			$normalisedBase = static::normaliseBaseUrl( (string) $base );
-			if ( $normalisedBase === '' )
-			{
-				continue;
-			}
-			$latencyByBase[ $normalisedBase ] = is_int( $ms ) ? $ms : NULL;
-		}
-		$isBackup = function ( string $base, ?string $role ): bool {
-			return static::isCatalogBackupEndpointUrl( $base, $role );
-		};
-		$sorted = \FfApiResilience::sortBasesByHealthyLatency( $endpoints, $latencyByBase, $endpointMeta, $isBackup );
-		$preferredOverride = static::preferredBaseOverride();
-		$routingFallback = in_array( $manual, $endpoints, TRUE ) ? $manual : ( $sorted[0] ?? $manual );
-		$computedPreferred = \FfApiResilience::resolvePreferredHealthyBase(
-			$sorted,
-			$latencyByBase,
-			$endpointMeta,
-			$isBackup,
-			$routingFallback
-		);
-		$preferred = $preferredOverride !== '' ? $preferredOverride : $computedPreferred;
-		$preferredCandidate = $preferred;
-		if ( $preferred === '' || !in_array( $preferred, $endpoints, TRUE ) )
-		{
-			$state['preferred_missing'] = $preferredCandidate;
-			$state['preferred_missing_at'] = time();
-			$preferred = $sorted[0] ?? $manual;
-			if ( $preferredOverride === '' )
-			{
-				$state['preferred'] = $preferred;
-			}
-			static::saveEndpointState( $state );
-		}
-		else if ( isset( $state['preferred_missing'] ) )
-		{
-			unset( $state['preferred_missing'] );
-			unset( $state['preferred_missing_at'] );
-			static::saveEndpointState( $state );
-		}
 
-		$out = \FfApiResilience::uniqueOrderedBases(
-			$preferred !== '' ? [ $preferred ] : [],
-			$sorted
-		);
-		if ( !in_array( $manual, $out, TRUE ) )
+		$endpoints = is_array( $state['endpoints'] ?? NULL ) ? $state['endpoints'] : [];
+		$endpoints = array_values( array_filter( array_unique( array_map( static function ( $url ) {
+			$url = static::normaliseBaseUrl( (string) $url );
+			return static::isTrustedEndpointBase( $url ) ? $url : '';
+		}, $endpoints ) ) ) );
+		$endpointMeta = is_array( $state['endpoint_meta'] ?? NULL ) ? $state['endpoint_meta'] : [];
+
+		// GeoDNS owns endpoint choice. Each new request starts at the regional
+		// API hostname; concrete catalog entries are same-request fallbacks only.
+		$out = [ $primary ];
+		if ( $isCheck )
 		{
-			$out[] = $manual;
-		}
-		if ( is_string( $requestPath ) && mb_strpos( $requestPath, '/v1/check' ) === 0 )
-		{
-			$out = array_values( array_filter( $out, function ( $b ) use ( $endpointMeta, $latencyByBase ) {
-				$base = (string) $b;
-				if ( !static::baseUrlMayServeCheckTraffic( $base ) )
+			$catalogFallbacks = array_values( array_filter( $endpoints, static function ( $base ) use ( $endpointMeta ) {
+				$meta = isset( $endpointMeta[ $base ] ) && is_array( $endpointMeta[ $base ] ) ? $endpointMeta[ $base ] : [];
+				$role = isset( $meta['role'] ) ? (string) $meta['role'] : NULL;
+				if ( static::isCatalogBackupEndpointUrl( (string) $base, $role ) )
 				{
 					return FALSE;
 				}
-				$ms = array_key_exists( $base, $latencyByBase ) && is_int( $latencyByBase[ $base ] )
-					? $latencyByBase[ $base ]
-					: NULL;
-
-				return \FfApiResilience::endpointEligibleForCheckTraffic( $endpointMeta, $base, $ms );
+				return !array_key_exists( 'check_ready', $meta ) || !empty( $meta['check_ready'] );
 			} ) );
+			$out = \FfApiResilience::uniqueOrderedBases( $out, $catalogFallbacks );
 			$control = static::normaliseBaseUrl( static::controlBaseUrl() );
-			if ( $control !== '' && static::baseUrlMayServeCheckTraffic( $control ) && !in_array( $control, $out, TRUE ) )
+			if ( $control !== '' && ( !empty( $state['control_check_fallback'] ) || !$catalogFallbacks ) )
 			{
 				$out[] = $control;
 			}
-			$out = \FfApiResilience::orderCheckBasesControlLast( $out, $control );
+			return \FfApiResilience::orderCheckBasesControlLast( $out, $control );
 		}
 
-		return $out;
+		return \FfApiResilience::uniqueOrderedBases( $out, $endpoints );
 	}
-
-	protected static function markPreferredBaseAfterFailover( string $baseUrl ): void
-	{
-		$baseUrl = static::normaliseBaseUrl( $baseUrl );
-		if ( $baseUrl === '' )
-		{
-			return;
-		}
-		if ( static::preferredBaseOverride() !== '' )
-		{
-			return;
-		}
-		$state = static::loadEndpointState();
-		$suppressed = is_array( $state['suppressed_endpoints'] ?? NULL ) ? $state['suppressed_endpoints'] : [];
-		unset( $suppressed[ $baseUrl ] );
-		$state['suppressed_endpoints'] = $suppressed;
-		$state['preferred'] = $baseUrl;
-		unset( $state['preferred_candidate'], $state['preferred_candidate_streak'] );
-		$state['failover_at'] = time();
-		static::saveEndpointState( $state );
-	}
-
-	protected static function isEndpointSuppressed( string $baseUrl, ?array $state = NULL ): bool
-	{
-		$baseUrl = static::normaliseBaseUrl( $baseUrl );
-		if ( $baseUrl === '' )
-		{
-			return FALSE;
-		}
-		$state = $state ?? static::loadEndpointState();
-		$suppressed = is_array( $state['suppressed_endpoints'] ?? NULL ) ? $state['suppressed_endpoints'] : [];
-		return (int) ( $suppressed[ $baseUrl ] ?? 0 ) > time();
-	}
-
-	protected static function suppressEndpoint( string $baseUrl ): void
-	{
-		$baseUrl = static::normaliseBaseUrl( $baseUrl );
-		if ( $baseUrl === '' )
-		{
-			return;
-		}
-		$state = static::loadEndpointState();
-		$now = time();
-		$suppressed = is_array( $state['suppressed_endpoints'] ?? NULL ) ? $state['suppressed_endpoints'] : [];
-		$suppressed[ $baseUrl ] = $now + \FfApiResilience::ENDPOINT_SUPPRESSION_SECONDS;
-		foreach ( $suppressed as $base => $until )
-		{
-			if ( (int) $until <= $now )
-			{
-				unset( $suppressed[ $base ] );
-			}
-		}
-		$state['suppressed_endpoints'] = $suppressed;
-		$state['refresh_requested_at'] = $now;
-		static::saveEndpointState( $state );
-	}
-
 	protected static function shouldFailoverOnIntermittentStatus( int $status, string $path ): bool
 	{
 		if ( !in_array( $status, [ 401, 404 ], TRUE ) )
@@ -4575,10 +4163,6 @@ class Client
 				$state['last_responded_node'] = trim( (string) ( $res['node_header'] ?? '' ) );
 				$state['last_response_at'] = time();
 				static::saveEndpointState( $state );
-				if ( $isCheck || $index > 0 )
-				{
-					static::markPreferredBaseAfterFailover( $base );
-				}
 				static::maybeRefreshEndpointCatalogAfterCheckIn( $path );
 				return $data;
 			}
@@ -4589,7 +4173,6 @@ class Client
 				|| static::shouldFailoverOnIntermittentStatus( $status, (string) $path );
 			if ( $canFailover )
 			{
-				static::suppressEndpoint( $base );
 				static::markEndpointRefreshRequested();
 			}
 			if ( !$canFailover )
@@ -4616,7 +4199,6 @@ class Client
 					$state['last_responded_node'] = trim( (string) ( $hotRes['node_header'] ?? '' ) );
 					$state['last_response_at'] = time();
 					static::saveEndpointState( $state );
-					static::markPreferredBaseAfterFailover( $hotApi );
 					static::maybeRefreshEndpointCatalogAfterCheckIn( $path );
 					return $hotData;
 				}
@@ -4770,11 +4352,20 @@ class Client
 			}
 			return $res;
 		}
-		if ( $allowRebootstrap && $status === 401 && static::shouldRebootstrap( $status, $responseBody, $path ) )
+		if ( $allowRebootstrap && static::shouldRebootstrap( $status, $responseBody, $path ) )
 		{
-			static::resetIdentity();
+			$previousStoredKey = (string) Settings::i()->ff_api_key;
+			$previousSiteId = (string) Settings::i()->ff_site_id;
+			if ( $status === 409 && static::responseErrorCode( $responseBody ) === 'stale_site' )
+			{
+				Settings::i()->changeValues( [ 'ff_site_id' => '' ] );
+			}
+			else
+			{
+				static::resetIdentity();
+			}
 			$bootstrap = static::bootstrapIfNeeded();
-			if ( is_array( $bootstrap ) && !empty( $bootstrap['api_key'] ) )
+			if ( is_array( $bootstrap ) && static::apiKey() !== '' && trim( (string) Settings::i()->ff_site_id ) !== '' )
 			{
 				// Swap *all* identity fields the retry payload carries. The
 				// freshly-minted credentials have a new site_id, so leaving
@@ -4790,47 +4381,49 @@ class Client
 				}
 				return static::requestOnBaseWithRetry( $method, $base, $path, $retried, $timeout, FALSE, $timeoutRetried );
 			}
+			Settings::i()->changeValues( [
+				'ff_api_key' => $previousStoredKey,
+				'ff_site_id' => $previousSiteId,
+			] );
 		}
 		return $res;
 	}
 
 	protected static function shouldRebootstrap( int $status, string $body, string $path ): bool
 	{
-		if ( $status !== 401 )
-		{
-			return FALSE;
-		}
 		if ( $path === '/v1/site/bootstrap' || static::apiKey() === '' )
 		{
 			return FALSE;
 		}
-		$data = json_decode( $body, TRUE );
-		if ( !is_array( $data ) )
+		$code = static::responseErrorCode( $body );
+		if ( $status === 409 )
+		{
+			return $code === 'stale_site';
+		}
+		if ( $status !== 401 )
 		{
 			return FALSE;
 		}
-		// Backend can emit either a flat body ({"error": "...", "message": "..."},
-		// produced by our HTTPException handler) or the FastAPI default
-		// ({"detail": {...}} or {"detail": "..."}). Match both shapes.
-		$candidates = [];
+		return in_array( $code, [ 'invalid_key', 'invalid_api_key', 'unknown_site', 'invalid_key_format', 'site_not_found', 'invalid api key', 'site not found' ], TRUE );
+	}
+
+	protected static function responseErrorCode( string $body ): string
+	{
+		$data = json_decode( $body, TRUE );
+		if ( !is_array( $data ) )
+		{
+			return '';
+		}
 		if ( isset( $data['error'] ) )
 		{
-			$candidates[] = strtolower( trim( (string) $data['error'] ) );
+			return strtolower( trim( (string) $data['error'] ) );
 		}
 		$detail = $data['detail'] ?? NULL;
 		if ( is_array( $detail ) && isset( $detail['error'] ) )
 		{
-			$candidates[] = strtolower( trim( (string) $detail['error'] ) );
+			return strtolower( trim( (string) $detail['error'] ) );
 		}
-		foreach ( $candidates as $candidate )
-		{
-			if ( in_array( $candidate, [ 'invalid_key', 'unknown_site', 'invalid_key_format' ], TRUE ) )
-			{
-				return TRUE;
-			}
-		}
-		$plainDetail = is_string( $detail ) ? strtolower( trim( $detail ) ) : '';
-		return in_array( $plainDetail, [ 'invalid api key', 'site not found' ], TRUE );
+		return is_string( $detail ) ? strtolower( trim( $detail ) ) : '';
 	}
 
 	protected static function resetIdentity(): void
@@ -4881,25 +4474,6 @@ class Client
 	{
 		$decision = strtolower( trim( (string) ( $response['decision'] ?? '' ) ) );
 		return in_array( $decision, [ 'allow', 'block' ], TRUE );
-	}
-
-	protected static function endpointHealthRefreshIntervalSeconds( array $state ): int
-	{
-		$bestLatency = (int) ( $state['best_latency_ms'] ?? 0 );
-		$slowMode = !empty( $state['slow_health_mode'] );
-		if ( $slowMode )
-		{
-			if ( $bestLatency > 0 && $bestLatency <= self::ENDPOINT_HEALTH_RECOVERY_MS )
-			{
-				return self::ENDPOINT_HEALTH_REFRESH_SECONDS;
-			}
-			return self::ENDPOINT_HEALTH_DEGRADED_REFRESH_SECONDS;
-		}
-		if ( $bestLatency > self::ENDPOINT_HEALTH_SLOW_TRIGGER_MS )
-		{
-			return self::ENDPOINT_HEALTH_DEGRADED_REFRESH_SECONDS;
-		}
-		return self::ENDPOINT_HEALTH_REFRESH_SECONDS;
 	}
 
 	protected static function refreshPlanCacheIfStale( bool $force ): void

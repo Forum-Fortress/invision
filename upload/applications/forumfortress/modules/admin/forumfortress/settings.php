@@ -265,15 +265,11 @@ class settings extends Controller
 		$form = new Form;
 		$form->action = $settingsUrl;
 		$form->add( new YesNo( 'ff_enabled', SettingsClass::i()->ff_enabled ) );
-		$urlValidator = static function ( mixed $value ): void {
-			Client::validateConfiguredBaseUrl( (string) $value );
-		};
 		$currentRegion = \FfApiResilience::normaliseApiRegion( (string) ( SettingsClass::i()->ff_api_region ?? \FfApiResilience::apiRegionFromLegacyBaseUrl( (string) SettingsClass::i()->ff_api_base_url ) ) );
 		$form->add( new Select( 'ff_api_region', $currentRegion, TRUE, [ 'options' => [
 			'global' => 'ff_region_global', 'uk' => 'ff_region_uk', 'eu' => 'ff_region_eu', 'us' => 'ff_region_us',
 		] ] ) );
 		$form->add( new YesNo( 'ff_allow_global_fallback', SettingsClass::i()->ff_allow_global_fallback ?? FALSE ) );
-		$form->add( new Text( 'ff_control_base_url', SettingsClass::i()->ff_control_base_url, FALSE, [], $urlValidator ) );
 		$form->add( new Number( 'ff_timeout', SettingsClass::i()->ff_timeout, FALSE, [ 'min' => 1, 'max' => 30 ] ) );
 		$form->add( new YesNo( 'ff_fail_open', SettingsClass::i()->ff_fail_open ) );
 		$form->add( new YesNo( 'ff_send_ham', SettingsClass::i()->ff_send_ham ?? TRUE ) );
@@ -431,8 +427,8 @@ class settings extends Controller
 		}
 
 		$lang = Member::loggedIn()->language();
-		$panel = '<section class="ipsBox ffCard"><div class="ffSectionHeader"><div><strong>' . $lang->addToStack( 'ff_section_endpoint_health' ) . '</strong><span>Measured from this forum server.</span></div></div>';
-		$panel .= '<table class="ipsTable ipsTable_zebra"><thead><tr><th>Endpoint</th><th>Latency</th></tr></thead><tbody>';
+		$panel = '<section class="ipsBox ffCard"><div class="ffSectionHeader"><div><strong>' . $lang->addToStack( 'ff_section_endpoint_health' ) . '</strong><span>GeoDNS primary followed by same-request fallbacks.</span></div></div>';
+		$panel .= '<table class="ipsTable ipsTable_zebra"><thead><tr><th>Endpoint</th><th>Routing role</th></tr></thead><tbody>';
 		foreach ( $latencyRows as $row )
 		{
 			$preferred = !empty( $row['is_preferred'] ) ? ' *' : '';

@@ -3,7 +3,6 @@
     { "key": "ff_api_base_url", "default": "https://api.ffapi.net", "report": "full" },
     { "key": "ff_api_region", "default": "global", "report": "full" },
     { "key": "ff_allow_global_fallback", "default": "0", "report": "full" },
-    { "key": "ff_control_base_url", "default": "https://control.ffapi.net", "report": "full" },
     { "key": "ff_preferred_endpoint", "default": "", "report": "full" },
     { "key": "ff_timeout", "default": "5", "report": "full" },
     { "key": "ff_fail_open", "default": "1", "report": "full" },
