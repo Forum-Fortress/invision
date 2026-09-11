@@ -58,7 +58,7 @@
     "ff_action_bootstrap": "Bootstrap now",
     "ff_action_test": "Connection test",
     "ff_action_register": "Complete registration",
-    "ff_action_portal": "Portal Login",
+    "ff_action_portal": "Open Forum Fortress",
     "ff_action_attack_on": "Enable attack mode",
   "ff_action_attack_off": "End attack mode",
   "ff_action_bootstrap_succeeded": "Forum Fortress connection details are ready.",

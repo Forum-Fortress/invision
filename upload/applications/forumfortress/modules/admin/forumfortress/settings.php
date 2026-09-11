@@ -175,7 +175,7 @@ class settings extends Controller
 				}
 				catch ( Throwable $e )
 				{
-					$actionResult = [ 'action' => 'portal', 'error' => $e->getMessage() ];
+					$actionResult = [ 'action' => 'portal', 'error' => 'Forum Fortress could not open the portal. Check the plugin connection and try again.' ];
 				}
 			}
 

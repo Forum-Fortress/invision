@@ -53,10 +53,12 @@ if ( !defined( '\IPS\SUITE_UNIQUE_KEY' ) )
 class Client
 {
 	public const PLATFORM = 'invision';
-	public const PLUGIN_VERSION = '1.3.6';
+	public const PLUGIN_VERSION = '1.4.0';
 	public const CONTROL_PLANE_BASE_URL = 'https://fortress.ffapi.net';
 	/** Minimum seconds between full hourly sync runs (task + HTTP traffic share this gate). */
 	protected const HOURLY_SYNC_MIN_INTERVAL = 540;
+	protected const STANDARD_HEARTBEAT_INTERVAL_SECONDS = 3600;
+	protected const PRO_HEARTBEAT_INTERVAL_SECONDS = 600;
 	protected const ENDPOINT_REFRESH_REQUEST_MAX_DELAY_SECONDS = 60;
 	protected const CONNECTION_TEST_TIMEOUT_SECONDS = 2;
 	protected const CONNECTION_TEST_TOTAL_BUDGET_SECONDS = 5;
@@ -267,35 +269,22 @@ class Client
 	/** @return list<string> */
 	protected static function bootstrapBasesOrdered(): array
 	{
-		if ( \FfApiResilience::apiRegionIsLocked( static::apiRegion() ) )
-		{
-			return \FfApiResilience::uniqueOrderedBases(
-				\FfApiResilience::regionLockedCheckBases( static::apiRegion(), static::allowGlobalEmergencyFallback() ),
-				[ static::controlBaseUrl() ]
-			);
-		}
-		return \FfApiResilience::bootstrapBasesOrdered(
-			static::controlBaseUrl(),
-			static::hotFailoverApiBaseUrl(),
-			static::baseUrl(),
-			static::edgeBasesFromState()
+		return \FfApiResilience::regionLockedCheckBases(
+			static::apiRegion(),
+			static::allowGlobalEmergencyFallback()
 		);
 	}
 
 	/** @return list<string> */
 	protected static function catalogFetchBases(): array
 	{
-		return \FfApiResilience::catalogFetchBases(
-			static::controlBaseUrl(),
-			static::hotFailoverApiBaseUrl(),
-			static::edgeBasesFromState()
-		);
+		return static::bootstrapBasesOrdered();
 	}
 
 	/** @return list<string> */
 	protected static function controlPlaneRequestBases(): array
 	{
-		return static::catalogFetchBases();
+		return static::bootstrapBasesOrdered();
 	}
 
 	/**
@@ -332,78 +321,9 @@ class Client
 	protected static function fetchNodeEndpointsCatalog( bool $force = FALSE, ?int $timeoutOverride = NULL ): bool
 	{
 		$state = static::loadEndpointState();
-		$previousEndpoints = is_array( $state['endpoints'] ?? NULL ) ? $state['endpoints'] : [];
-		$now = time();
-		if ( !$force && !\FfApiResilience::isEndpointCatalogStale( $state ) )
-		{
-			return TRUE;
-		}
-		if ( !$force && \FfApiResilience::shouldBackoffEndpointCatalogRefresh( $state, $now ) )
-		{
-			return FALSE;
-		}
-
-		$urls = [];
-		$endpointMeta = [];
-		foreach ( static::catalogFetchBases() as $catalogBase )
-		{
-			$res = static::rawRequest( 'GET', $catalogBase, '/v1/node-endpoints', [], max( 1, $timeoutOverride ?? self::CONNECTION_TEST_TIMEOUT_SECONDS ) );
-			if ( ( $res['status'] ?? 0 ) < 200 || ( $res['status'] ?? 0 ) >= 300 || !is_array( $res['data'] ?? NULL ) )
-			{
-				continue;
-			}
-			$endpoints = $res['data']['endpoints'] ?? NULL;
-			if ( !is_array( $endpoints ) )
-			{
-				continue;
-			}
-			$state['control_check_fallback'] = !empty( $res['data']['control_check_fallback'] );
-			$endpointMeta = [];
-			foreach ( $endpoints as $row )
-			{
-				if ( !is_array( $row ) )
-				{
-					continue;
-				}
-				$url = static::normaliseBaseUrl( (string) ( $row['url'] ?? '' ) );
-				if ( $url === '' )
-				{
-					continue;
-				}
-				$urls[ $url ] = TRUE;
-				$endpointMeta[ $url ] = [
-					'check_ready' => array_key_exists( 'check_ready', $row ) ? (bool) $row['check_ready'] : NULL,
-					'status' => isset( $row['status'] ) ? (string) $row['status'] : '',
-					'role' => isset( $row['role'] ) ? (string) $row['role'] : '',
-					'traffic_tier' => array_key_exists( 'traffic_tier', $row )
-						? \FfApiResilience::normaliseTrafficTier( $row['traffic_tier'] )
-						: NULL,
-				];
-			}
-			if ( $urls )
-			{
-				break;
-			}
-		}
-		if ( !$urls )
-		{
-			\FfApiResilience::noteEndpointCatalogRefreshFailure( $state, $now );
-			static::saveEndpointState( $state );
-
-			return FALSE;
-		}
-		$newEndpoints = array_values( array_keys( $urls ) );
-		if ( static::endpointCatalogChanged( $previousEndpoints, $newEndpoints ) )
-		{
-			static::invalidateEndpointHealthState( $state );
-		}
-		$state['catalog_fetched_at'] = $now;
-		$state['endpoints'] = $newEndpoints;
-		if ( $endpointMeta )
-		{
-			$state['endpoint_meta'] = $endpointMeta;
-		}
-		\FfApiResilience::noteEndpointCatalogRefreshSuccess( $state );
+		$state['endpoints'] = static::bootstrapBasesOrdered();
+		$state['catalog_fetched_at'] = 0;
+		unset( $state['endpoint_meta'], $state['control_check_fallback'] );
 		static::saveEndpointState( $state );
 
 		return TRUE;
@@ -944,10 +864,6 @@ class Client
 
 		$timeout = max( 1, (int) Settings::i()->ff_timeout );
 		$result = static::tryBootstrapAcrossBases( static::bootstrapBasesOrdered(), $timeout );
-		if ( !$result && static::fetchNodeEndpointsCatalog( TRUE ) )
-		{
-			$result = static::tryBootstrapAcrossBases( static::bootstrapBasesOrdered(), $timeout );
-		}
 
 		if ( $result )
 		{
@@ -1904,15 +1820,6 @@ class Client
 
 		try
 		{
-			static::refreshEndpointCatalogAndHealth();
-		}
-		catch ( Throwable $e )
-		{
-			$succeeded = FALSE;
-		}
-
-		try
-		{
 			if ( static::shouldRunDailyTask( 'plugin_release_last_at' ) )
 			{
 				static::pluginRelease();
@@ -1924,16 +1831,30 @@ class Client
 			$succeeded = FALSE;
 		}
 
-		try
+		$heartbeatState = static::loadEndpointState();
+		$lastHeartbeat = max(
+			(int) ( $heartbeatState['last_site_ping_at'] ?? 0 ),
+			(int) ( $heartbeatState['last_site_ping_attempt_at'] ?? 0 )
+		);
+		$plan = strtolower( trim( (string) ( $heartbeatState['plan_name'] ?? '' ) ) );
+		$heartbeatInterval = in_array( $plan, [ 'pro', 'multimod' ], TRUE )
+			? self::PRO_HEARTBEAT_INTERVAL_SECONDS
+			: self::STANDARD_HEARTBEAT_INTERVAL_SECONDS;
+		if ( $lastHeartbeat <= 0 || ( time() - $lastHeartbeat ) >= $heartbeatInterval )
 		{
-			if ( static::sitePing( self::CONNECTION_TEST_TIMEOUT_SECONDS ) === NULL )
+			$heartbeatState['last_site_ping_attempt_at'] = time();
+			static::saveEndpointState( $heartbeatState );
+			try
+			{
+				if ( static::sitePing( self::CONNECTION_TEST_TIMEOUT_SECONDS ) === NULL )
+				{
+					$succeeded = FALSE;
+				}
+			}
+			catch ( Throwable $e )
 			{
 				$succeeded = FALSE;
 			}
-		}
-		catch ( Throwable $e )
-		{
-			$succeeded = FALSE;
 		}
 
 		try
@@ -2248,26 +2169,7 @@ class Client
 
 	public static function health( ?int $timeoutOverride = null ): ?array
 	{
-		if ( !static::isEnabled() )
-		{
-			return NULL;
-		}
-		if ( \FfApiResilience::apiRegionIsLocked( static::apiRegion() ) )
-		{
-			$timeout = max( 1, $timeoutOverride ?? self::CONNECTION_TEST_TIMEOUT_SECONDS );
-			foreach ( \FfApiResilience::regionLockedCheckBases( static::apiRegion(), static::allowGlobalEmergencyFallback() ) as $base )
-			{
-				$health = static::rawRequest( 'GET', $base, '/health', [], $timeout );
-				if ( ( $health['status'] ?? 0 ) >= 200 && ( $health['status'] ?? 0 ) < 300
-					&& is_array( $health['data'] ?? NULL ) )
-				{
-					return $health['data'];
-				}
-			}
-			return NULL;
-		}
-
-		return static::request( 'GET', '/health', [], $timeoutOverride ?? self::CONNECTION_TEST_TIMEOUT_SECONDS );
+		return static::sitePing( $timeoutOverride );
 	}
 
 	public static function capabilities( ?int $timeoutOverride = null ): ?array
@@ -3821,15 +3723,7 @@ class Client
 			return [];
 		}
 		$state = static::loadEndpointState();
-		$isCheck = is_string( $requestPath ) && strpos( $requestPath, '/v1/check' ) === 0;
-		if ( $isCheck && \FfApiResilience::apiRegionIsLocked( static::apiRegion() ) && !static::isOfflineApiKey() )
-		{
-			return \FfApiResilience::regionLockedCheckBases(
-				static::apiRegion(),
-				static::allowGlobalEmergencyFallback()
-			);
-		}
-		if ( $isCheck && static::isOfflineApiKey() )
+		if ( static::isOfflineApiKey() )
 		{
 			$pinned = \FfApiResilience::offlinePinnedCheckBases( $state );
 			if ( $pinned && static::isTrustedEndpointBase( (string) $pinned[0] ) )
@@ -3837,52 +3731,10 @@ class Client
 				return $pinned;
 			}
 		}
-		if (
-			is_string( $requestPath )
-			&& ( \FfApiResilience::isStrictSupernodeSyncPath( $requestPath ) || \FfApiResilience::isControlPlanePreferredPath( $requestPath ) )
-		)
-		{
-			$bases = \FfApiResilience::moderationSyncBasesOrdered(
-				static::hotFailoverApiBaseUrl(),
-				static::controlBaseUrl()
-			);
-			if ( $bases )
-			{
-				return $bases;
-			}
-		}
-
-		$endpoints = is_array( $state['endpoints'] ?? NULL ) ? $state['endpoints'] : [];
-		$endpoints = array_values( array_filter( array_unique( array_map( static function ( $url ) {
-			$url = static::normaliseBaseUrl( (string) $url );
-			return static::isTrustedEndpointBase( $url ) ? $url : '';
-		}, $endpoints ) ) ) );
-		$endpointMeta = is_array( $state['endpoint_meta'] ?? NULL ) ? $state['endpoint_meta'] : [];
-
-		// GeoDNS owns endpoint choice. Each new request starts at the regional
-		// API hostname; concrete catalog entries are same-request fallbacks only.
-		$out = [ $primary ];
-		if ( $isCheck )
-		{
-			$catalogFallbacks = array_values( array_filter( $endpoints, static function ( $base ) use ( $endpointMeta ) {
-				$meta = isset( $endpointMeta[ $base ] ) && is_array( $endpointMeta[ $base ] ) ? $endpointMeta[ $base ] : [];
-				$role = isset( $meta['role'] ) ? (string) $meta['role'] : NULL;
-				if ( static::isCatalogBackupEndpointUrl( (string) $base, $role ) )
-				{
-					return FALSE;
-				}
-				return !array_key_exists( 'check_ready', $meta ) || !empty( $meta['check_ready'] );
-			} ) );
-			$out = \FfApiResilience::uniqueOrderedBases( $out, $catalogFallbacks );
-			$control = static::normaliseBaseUrl( static::controlBaseUrl() );
-			if ( $control !== '' && ( !empty( $state['control_check_fallback'] ) || !$catalogFallbacks ) )
-			{
-				$out[] = $control;
-			}
-			return \FfApiResilience::orderCheckBasesControlLast( $out, $control );
-		}
-
-		return \FfApiResilience::uniqueOrderedBases( $out, $endpoints );
+		return \FfApiResilience::regionLockedCheckBases(
+			static::apiRegion(),
+			static::allowGlobalEmergencyFallback()
+		);
 	}
 	protected static function shouldFailoverOnIntermittentStatus( int $status, string $path ): bool
 	{
@@ -4093,21 +3945,7 @@ class Client
 		{
 			return $result;
 		}
-		/* A live check already traverses the bounded runtime failover list. Do
-		 * not add a catalog refresh and second pass to a user-facing request. */
-		if ( mb_strpos( $path, '/v1/check' ) === 0 )
-		{
-			return NULL;
-		}
-		try
-		{
-			static::refreshEndpointCatalogAndHealth( TRUE );
-		}
-		catch ( Throwable $e )
-		{
-		}
-
-		return static::requestPass( $method, $path, $body, $timeoutOverride, FALSE );
+		return NULL;
 	}
 
 	protected static function requestModeration( string $method, string $path, array $body ): ?array
