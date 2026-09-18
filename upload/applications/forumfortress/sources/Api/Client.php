@@ -53,8 +53,8 @@ if ( !defined( '\IPS\SUITE_UNIQUE_KEY' ) )
 class Client
 {
 	public const PLATFORM = 'invision';
-	public const PLUGIN_VERSION = '1.4.0';
-	public const CONTROL_PLANE_BASE_URL = 'https://fortress.ffapi.net';
+	public const PLUGIN_VERSION = '1.4.1';
+	public const CONTROL_PLANE_BASE_URL = 'https://api.ffapi.net';
 	/** Minimum seconds between full hourly sync runs (task + HTTP traffic share this gate). */
 	protected const HOURLY_SYNC_MIN_INTERVAL = 540;
 	protected const STANDARD_HEARTBEAT_INTERVAL_SECONDS = 3600;
