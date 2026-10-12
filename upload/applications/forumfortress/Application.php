@@ -14,4 +14,9 @@ if ( !defined( '\IPS\SUITE_UNIQUE_KEY' ) )
 
 class Application extends SystemApplication
 {
+    public function set__enabled(bool|int $enabled): void
+    {
+        if (!$enabled) { RepeatOffenders::cancelPending(); }
+        parent::set__enabled($enabled);
+    }
 }

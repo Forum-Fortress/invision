@@ -1,3 +1,4 @@
 {
-    "hourlySync": "P0Y0M0DT0H10M0S"
+    "hourlySync": "P0Y0M0DT0H10M0S",
+    "repeatOffenders": "P0Y0M0DT0H1M0S"
 }

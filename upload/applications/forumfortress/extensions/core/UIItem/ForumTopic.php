@@ -6,7 +6,8 @@ use DomainException;
 use IPS\Content\Item as BaseItem;
 use IPS\forumfortress\Api\Client;
 use IPS\forums\Topic;
-use IPS\Helpers\Form\Custom;
+use IPS\forumfortress\RepeatCheck;
+use IPS\forumfortress\RepeatOffenders;
 use IPS\Node\Model;
 use IPS\Output\UI\Item;
 use IPS\Request;
@@ -29,11 +30,11 @@ class ForumTopic extends Item
 	{
 		$endpoint = $item === NULL ? 'topic' : 'topic_edit';
 		return [
-			'forumfortress_topic_check' => new Custom( 'forumfortress_topic_check', NULL, FALSE, [
+			'forumfortress_topic_check' => new RepeatCheck( 'forumfortress_topic_check', NULL, FALSE, [
 				'getHtml' => static fn() => '',
 				'rowHtml' => static fn() => '',
 				'formatValue' => static fn() => '1',
-				'validate' => static function () use ( $endpoint ): void {
+				'validate' => static function ( RepeatCheck $helper ) use ( $item, $endpoint ): void {
 					if ( !Client::isEnabled() )
 					{
 						return;
@@ -72,6 +73,7 @@ class ForumTopic extends Item
 					$decision = strtolower( trim( (string) ( $response['decision'] ?? '' ) ) );
 					if ( $decision === 'block' )
 					{
+                        RepeatOffenders::stage($item === NULL ? (int) \IPS\Member::loggedIn()->member_id : (int) $item->author()->member_id, $content, $response, [$helper, 'validatedSubmission']);
 						throw new DomainException( 'forumfortress_post_blocked' );
 					}
 				},

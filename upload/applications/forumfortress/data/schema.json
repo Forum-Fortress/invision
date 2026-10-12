@@ -1,0 +1,234 @@
+{
+    "forumfortress_repeat_state": {
+        "name": "forumfortress_repeat_state",
+        "columns": {
+            "member_id": {
+                "name": "member_id",
+                "type": "BIGINT",
+                "length": 20,
+                "decimals": null,
+                "values": [],
+                "allow_null": false,
+                "default": "0",
+                "comment": "",
+                "unsigned": true,
+                "zerofill": false,
+                "auto_increment": false,
+                "binary": false
+            },
+            "pending": {
+                "name": "pending",
+                "type": "BIGINT",
+                "length": 20,
+                "decimals": null,
+                "values": [],
+                "allow_null": false,
+                "default": "0",
+                "comment": "",
+                "unsigned": true,
+                "zerofill": false,
+                "auto_increment": false,
+                "binary": false
+            },
+            "touched": {
+                "name": "touched",
+                "type": "BIGINT",
+                "length": 20,
+                "decimals": null,
+                "values": [],
+                "allow_null": false,
+                "default": "0",
+                "comment": "",
+                "unsigned": true,
+                "zerofill": false,
+                "auto_increment": false,
+                "binary": false
+            },
+            "attempted": {
+                "name": "attempted",
+                "type": "BIGINT",
+                "length": 20,
+                "decimals": null,
+                "values": [],
+                "allow_null": false,
+                "default": "0",
+                "comment": "",
+                "unsigned": true,
+                "zerofill": false,
+                "auto_increment": false,
+                "binary": false
+            }
+        },
+        "indexes": {
+            "PRIMARY": {
+                "type": "primary",
+                "name": "PRIMARY",
+                "length": [
+                    null
+                ],
+                "columns": [
+                    "member_id"
+                ]
+            },
+            "pending": {
+                "type": "key",
+                "name": "pending",
+                "length": [
+                    null,
+                    null
+                ],
+                "columns": [
+                    "pending",
+                    "touched"
+                ]
+            }
+        },
+        "inserts": [
+            {
+                "member_id": 0,
+                "pending": 0,
+                "touched": 0,
+                "attempted": 0
+            }
+        ],
+        "comment": "Repeat enforcement receipts",
+        "reporting": "count"
+    },
+    "forumfortress_repeat_events": {
+        "name": "forumfortress_repeat_events",
+        "columns": {
+            "event_id": {
+                "name": "event_id",
+                "type": "BIGINT",
+                "length": 20,
+                "decimals": null,
+                "values": [],
+                "allow_null": false,
+                "default": null,
+                "comment": "",
+                "unsigned": true,
+                "zerofill": false,
+                "auto_increment": true,
+                "binary": false
+            },
+            "member_id": {
+                "name": "member_id",
+                "type": "BIGINT",
+                "length": 20,
+                "decimals": null,
+                "values": [],
+                "allow_null": false,
+                "default": "0",
+                "comment": "",
+                "unsigned": true,
+                "zerofill": false,
+                "auto_increment": false,
+                "binary": false
+            },
+            "observed": {
+                "name": "observed",
+                "type": "BIGINT",
+                "length": 20,
+                "decimals": null,
+                "values": [],
+                "allow_null": false,
+                "default": "0",
+                "comment": "",
+                "unsigned": true,
+                "zerofill": false,
+                "auto_increment": false,
+                "binary": false
+            },
+            "consumed": {
+                "name": "consumed",
+                "type": "BIGINT",
+                "length": 20,
+                "decimals": null,
+                "values": [],
+                "allow_null": false,
+                "default": "0",
+                "comment": "",
+                "unsigned": true,
+                "zerofill": false,
+                "auto_increment": false,
+                "binary": false
+            },
+            "body_hash": {
+                "name": "body_hash",
+                "type": "CHAR",
+                "length": 64,
+                "decimals": null,
+                "values": [],
+                "allow_null": false,
+                "default": "",
+                "comment": "",
+                "unsigned": false,
+                "zerofill": false,
+                "auto_increment": false,
+                "binary": false
+            },
+            "ref_hash": {
+                "name": "ref_hash",
+                "type": "CHAR",
+                "length": 64,
+                "decimals": null,
+                "values": [],
+                "allow_null": false,
+                "default": "",
+                "comment": "",
+                "unsigned": false,
+                "zerofill": false,
+                "auto_increment": false,
+                "binary": false
+            }
+        },
+        "indexes": {
+            "PRIMARY": {
+                "type": "primary",
+                "name": "PRIMARY",
+                "length": [
+                    null
+                ],
+                "columns": [
+                    "event_id"
+                ]
+            },
+            "member_body": {
+                "type": "unique",
+                "name": "member_body",
+                "length": [
+                    null,
+                    null
+                ],
+                "columns": [
+                    "member_id",
+                    "body_hash"
+                ]
+            },
+            "member_ref": {
+                "type": "unique",
+                "name": "member_ref",
+                "length": [
+                    null,
+                    null
+                ],
+                "columns": [
+                    "member_id",
+                    "ref_hash"
+                ]
+            },
+            "age": {
+                "type": "key",
+                "name": "age",
+                "length": [
+                    null
+                ],
+                "columns": [
+                    "observed"
+                ]
+            }
+        },
+        "comment": "Hashed certified BLOCK evidence",
+        "reporting": "count"
+    }
+}

@@ -265,6 +265,8 @@ class settings extends Controller
 		$form = new Form;
 		$form->action = $settingsUrl;
 		$form->add( new YesNo( 'ff_enabled', SettingsClass::i()->ff_enabled ) );
+        $form->add(new YesNo('ff_repeat_ban', SettingsClass::i()->ff_repeat_ban ?? FALSE));
+        if (!\IPS\forumfortress\RepeatOffenders::available()) { $form->addMessage('ff_repeat_ban_unavailable'); }
 		$currentRegion = \FfApiResilience::normaliseApiRegion( (string) ( SettingsClass::i()->ff_api_region ?? \FfApiResilience::apiRegionFromLegacyBaseUrl( (string) SettingsClass::i()->ff_api_base_url ) ) );
 		$form->add( new Select( 'ff_api_region', $currentRegion, TRUE, [ 'options' => [
 			'global' => 'ff_region_global', 'uk' => 'ff_region_uk', 'eu' => 'ff_region_eu', 'us' => 'ff_region_us',
@@ -308,12 +310,20 @@ class settings extends Controller
 				? Client::encryptApiKeyForStorage( $submittedApiKey )
 				: (string) SettingsClass::i()->ff_api_key;
 			$form->saveAsSettings( $values );
+            if (empty($values['ff_enabled']) || empty($values['ff_repeat_ban'])) { \IPS\forumfortress\RepeatOffenders::cancelPending(); }
 			Session::i()->log( 'acplogs__ff_settings' );
 			Output::i()->redirect( $settingsUrl, 'saved', 303 );
 			return;
 		}
 
-		$output .= (string) $form . '</section></div>';
+		$output .= (string) $form . '</section>';
+        $receipts = \IPS\forumfortress\RepeatOffenders::recent();
+        if ($receipts) {
+            $output .= '<section class="ipsBox ffCard"><strong>' . Member::loggedIn()->language()->addToStack('ff_repeat_ban_receipts') . '</strong><ul>';
+            foreach ($receipts as $receipt) { $output .= '<li>#' . (int)$receipt['member_id'] . ' / ' . htmlspecialchars(gmdate('Y-m-d H:i:s', (int)$receipt['attempted'])) . ' UTC</li>'; }
+            $output .= '</ul></section>';
+        }
+        $output .= '</div>';
 		Output::i()->output = $output;
 	}
 

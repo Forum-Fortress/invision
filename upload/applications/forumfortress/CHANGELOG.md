@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.2 - 2026-10-12
+
+- Add an off-by-default native seven-day repeat-spammer ban option and minutely
+  task, with atomic hashed evidence, body/reference deduplication, bounded storage,
+  fresh account/role checks and moderator-reversal receipts.
+- Persist evidence after validated native forms/content events; keep account
+  mutation in the separate task and preserve existing identity and held metadata.
+- Add disposable native upgrade, concurrency, rollback/crash, AdminCP and lifecycle
+  verification with rehydration snapshots and container removal on exit.
+
+
 ## 1.4.1 - 2026-09-18
 
 - Route lifecycle and bootstrap requests through the resilient public API path.

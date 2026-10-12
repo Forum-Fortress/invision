@@ -7,7 +7,8 @@ use IPS\Content\Comment as BaseComment;
 use IPS\Content\Item as BaseItem;
 use IPS\forumfortress\Api\Client;
 use IPS\forums\Topic\Post;
-use IPS\Helpers\Form\Custom;
+use IPS\forumfortress\RepeatCheck;
+use IPS\forumfortress\RepeatOffenders;
 use IPS\Output\UI\Comment;
 use IPS\Request;
 use IPS\Settings;
@@ -28,11 +29,11 @@ class ForumPost extends Comment
 	{
 		$endpoint = $comment === NULL ? 'reply' : 'reply_edit';
 		return [
-			'forumfortress_reply_check' => new Custom( 'forumfortress_reply_check', NULL, FALSE, [
+			'forumfortress_reply_check' => new RepeatCheck( 'forumfortress_reply_check', NULL, FALSE, [
 				'getHtml' => static fn() => '',
 				'rowHtml' => static fn() => '',
 				'formatValue' => static fn() => '1',
-				'validate' => static function () use ( $item, $endpoint ): void {
+				'validate' => static function ( RepeatCheck $helper ) use ( $item, $comment, $endpoint ): void {
 					if ( !Client::isEnabled() )
 					{
 						return;
@@ -75,6 +76,7 @@ class ForumPost extends Comment
 					$decision = strtolower( trim( (string) ( $response['decision'] ?? '' ) ) );
 					if ( $decision === 'block' )
 					{
+                        RepeatOffenders::stage($comment === NULL ? (int) \IPS\Member::loggedIn()->member_id : (int) $comment->author()->member_id, $raw, $response, [$helper, 'validatedSubmission']);
 						throw new DomainException( 'forumfortress_post_blocked' );
 					}
 				},
