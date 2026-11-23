@@ -51,17 +51,12 @@ class ForumPost extends Comment
 						return;
 					}
 
-					$payload = [
+					$payload = array_merge( [
 						'ip' => Client::clientIp(),
-						'username' => (string) \IPS\Member::loggedIn()->name,
-						'email' => (string) \IPS\Member::loggedIn()->email,
-						'email_domain' => Client::emailDomain( (string) \IPS\Member::loggedIn()->email ),
-						'post_count' => (int) \IPS\Member::loggedIn()->member_posts,
-						'account_age_seconds' => (int) ( time() - (int) \IPS\Member::loggedIn()->joined ),
 						'user_agent' => (string) ( Request::i()->userAgent() ?? '' ),
 						'content' => $raw,
 						'links' => Client::extractLinks( $raw ),
-					];
+					], Client::contentMemberIdentityPayload( \IPS\Member::loggedIn() ) );
 					$response = Client::checkContent( $endpoint, $payload );
 
 					if ( $response === NULL )

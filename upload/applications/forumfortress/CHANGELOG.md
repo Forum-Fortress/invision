@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.3 - 2026-11-23
+
+- Check each registration once and treat completion of a social login account as registration.
+- Keep later profile edits and confirmed spam or HAM feedback separate from registration.
+- Keep account age unknown when the stored join timestamp is missing or invalid.
+- Omit unverified guest and Post Before Registering usernames and account age from topic/reply checks.
+- Preserve submitted content, links, network and first-post checks; continue evaluating genuine registered member identities.
+- Verified the native application lifecycle on Invision Community 5.0.21 with PHP 8.3.
+
 ## 1.4.2 - 2026-10-12
 
 - Add an off-by-default native seven-day repeat-spammer ban option and minutely

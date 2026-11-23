@@ -53,7 +53,7 @@ if ( !defined( '\IPS\SUITE_UNIQUE_KEY' ) )
 class Client
 {
 	public const PLATFORM = 'invision';
-	public const PLUGIN_VERSION = '1.4.2';
+	public const PLUGIN_VERSION = '1.4.3';
 	public const CONTROL_PLANE_BASE_URL = 'https://api.ffapi.net';
 	/** Minimum seconds between full hourly sync runs (task + HTTP traffic share this gate). */
 	protected const HOURLY_SYNC_MIN_INTERVAL = 540;
@@ -71,9 +71,8 @@ class Client
 
 	protected static bool $lastCheckHadTimeout = FALSE;
 
-	/** @var array<string, mixed>|null */
+	/** @var array{response: ?array, payload: array, timed_out: bool}|null */
 	protected static ?array $pendingRegisterResult = NULL;
-	protected static bool $registerCheckAttempted = FALSE;
 	/** @var array<int, bool> */
 	protected static array $processedRegistrations = [];
 	/** @var array<string, array{response: ?array, timed_out: bool}> */
@@ -1047,7 +1046,13 @@ class Client
 			return NULL;
 		}
 
-		static::$registerCheckAttempted = TRUE;
+		$previous = static::$pendingRegisterResult;
+		if ( $previous !== NULL && $previous['payload'] === $payload )
+		{
+			static::$lastCheckHadTimeout = $previous['timed_out'];
+			return $previous['response'];
+		}
+
 		static::$lastCheckHadTimeout = FALSE;
 		$prepared = static::withCheckRequestId( static::preparePayload( $payload ) );
 		$timeout = max( 1, min( 30, (int) Settings::i()->ff_timeout ) );
@@ -1059,7 +1064,7 @@ class Client
 		}
 		static::$pendingRegisterResult = [
 			'response' => $response,
-			'payload' => $prepared,
+			'payload' => $payload,
 			'timed_out' => static::$lastCheckHadTimeout,
 		];
 		if ( is_array( $response ) )
@@ -1076,13 +1081,15 @@ class Client
 	}
 
 	/**
-	 * Finish the check after IPS has assigned the member ID. This also covers
-	 * social/OAuth account creation, which bypasses the registration form.
+	 * Apply the form check to the new member, or check the complete identity
+	 * supplied by social login and the native account completion form.
 	 */
 	public static function completeRegistrationCheck( \IPS\Member $member ): void
 	{
 		$memberId = (int) $member->member_id;
-		if ( !static::isEnabled() || $memberId <= 0 || isset( static::$processedRegistrations[ $memberId ] ) )
+		$email = trim( (string) $member->email );
+		if ( !static::isEnabled() || $memberId <= 0 || isset( static::$processedRegistrations[ $memberId ] )
+			|| trim( (string) $member->real_name ) === '' || $email === '' )
 		{
 			return;
 		}
@@ -1090,20 +1097,16 @@ class Client
 
 		$result = static::$pendingRegisterResult;
 		static::$pendingRegisterResult = NULL;
-		if ( !static::$registerCheckAttempted || !is_array( $result ) )
+		if ( $result === NULL || strcasecmp( trim( (string) ( $result['payload']['email'] ?? '' ) ), $email ) !== 0 )
 		{
-			$payload = static::memberCheckPayload( $member );
-			$response = static::checkRegisterPayload( $payload );
-			$result = static::$pendingRegisterResult ?? [
-				'response' => $response,
-				'payload' => $payload,
-				'timed_out' => static::$lastCheckHadTimeout,
-			];
+			$response = static::checkRegisterPayload( static::memberCheckPayload( $member ) );
 			static::$pendingRegisterResult = NULL;
 		}
+		else
+		{
+			$response = $result['response'];
+		}
 
-		$response = is_array( $result['response'] ?? NULL ) ? $result['response'] : NULL;
-		$timedOut = !empty( $result['timed_out'] );
 		$decision = strtolower( trim( (string) ( $response['decision'] ?? '' ) ) );
 		$statusCode = strtoupper( trim( (string) ( $response['status_code'] ?? '' ) ) );
 
@@ -1114,18 +1117,10 @@ class Client
 			static::applyBlockedRegistrationAction( $member, $response, 'Forum Fortress block: registration rejected' );
 			return;
 		}
-		if ( $timedOut && Settings::i()->ff_fail_open )
-		{
-			static::reportRegister( $member );
-			return;
-		}
 		if ( ( $response === NULL || $statusCode === 'ABOVELIMIT' ) && !Settings::i()->ff_fail_open )
 		{
 			static::applyBlockedRegistrationAction( $member, $response ?? [], 'Forum Fortress unavailable: registration rejected' );
-			return;
 		}
-
-		static::reportRegister( $member );
 	}
 
 	/**
@@ -1420,7 +1415,7 @@ class Client
 			'email' => $email,
 			'email_domain' => static::emailDomain( $email ),
 			'user_agent' => (string) ( Request::i()->userAgent() ?? '' ),
-			'account_age_seconds' => max( 0, time() - (int) $member->joined ),
+			'account_age_seconds' => static::memberAccountAgeSeconds( $member ),
 			'post_count' => (int) $member->member_posts,
 			'content' => NULL,
 			'links' => [],
@@ -1656,6 +1651,18 @@ class Client
 		{
 			return;
 		}
+
+		// The native account-completion form saves login identity as a profile update.
+		$request = Request::i();
+		if ( ( isset( $changes['name'] ) || isset( $changes['email'] ) )
+			&& $request->app === 'core' && $request->module === 'system'
+			&& $request->controller === 'register' && $request->do === 'complete'
+			&& (int) \IPS\Member::loggedIn()->member_id === (int) $member->member_id )
+		{
+			static::completeRegistrationCheck( $member );
+			unset( $changes['name'], $changes['email'] );
+		}
+
 		$signature = isset( $changes['signature'] ) ? trim( (string) $changes['signature'] ) : '';
 		$profileParts = [];
 		foreach ( $changes as $key => $value )
@@ -1756,31 +1763,6 @@ class Client
 	public static function cleanupMemberApprovalOnDelete( \IPS\Member $member ): void
 	{
 		static::deleteOwnedMemberValidationRows( (int) $member->member_id );
-	}
-
-	public static function reportRegister( \IPS\Member $member ): void
-	{
-		if ( !static::isEnabled() or !$member->member_id )
-		{
-			return;
-		}
-
-		static::bootstrapIfNeeded();
-
-		$email = trim( (string) $member->email );
-		$payload = [
-			'forum_id' => NULL,
-			'username' => (string) $member->name,
-			'email_domain' => static::emailDomain( $email ),
-			'ip' => static::clientIp(),
-			'links' => [],
-			'payload' => [
-				'source' => 'invision_registration',
-				'member_id' => $member->member_id,
-			],
-		];
-
-		static::request( 'POST', '/v1/report/register', static::preparePayload( $payload ) );
 	}
 
 	public static function hourlySync(): bool
@@ -2143,6 +2125,63 @@ class Client
 		return trim( $title . ( $title !== '' && $body !== '' ? "\n\n" : '' ) . $body );
 	}
 
+	protected static function memberAccountAgeSeconds( object $member ): ?int
+	{
+		$joined = $member->joined ?? NULL;
+		if ( !is_int( $joined ) && !is_string( $joined ) )
+		{
+			return NULL;
+		}
+		$now = time();
+		$timestamp = filter_var( $joined, FILTER_VALIDATE_INT, [
+			'options' => [ 'min_range' => 1, 'max_range' => $now ],
+		] );
+
+		return $timestamp === FALSE ? NULL : $now - $timestamp;
+	}
+
+	/**
+	 * Only authenticated, fully established members have a reliable chosen
+	 * username and registration age. IPS Post Before Registering can expose an
+	 * anonymous/synthetic author (member_id=0, joined=0); never score its
+	 * placeholder as a chosen username or an epoch-sized account age.
+	 *
+	 * A guest/pending submission still has first-post context. Its genuine
+	 * content, links, IP and user-agent are supplied by the caller.
+	 *
+	 * @return array<string, mixed>
+	 */
+	public static function contentMemberIdentityPayload( object $member ): array
+	{
+		$memberId = (int) ( $member->member_id ?? 0 );
+		$accountAge = static::memberAccountAgeSeconds( $member );
+		$pending = FALSE;
+		if ( $memberId > 0 && method_exists( $member, 'isValidating' ) )
+		{
+			try
+			{
+				$pending = (bool) $member->isValidating();
+			}
+			catch ( Throwable $e )
+			{
+				$pending = TRUE;
+			}
+		}
+		if ( $memberId <= 0 || $accountAge === NULL || $pending )
+		{
+			return [ 'post_count' => 0 ];
+		}
+
+		$email = (string) ( $member->email ?? '' );
+		return [
+			'username' => (string) ( $member->name ?? '' ),
+			'email' => $email,
+			'email_domain' => static::emailDomain( $email ),
+			'post_count' => max( 0, (int) ( $member->member_posts ?? 0 ) ),
+			'account_age_seconds' => $accountAge,
+		];
+	}
+
 	/** @return array<string, mixed> */
 	protected static function contentCheckPayload( object $content, string $text ): array
 	{
@@ -2157,18 +2196,16 @@ class Client
 		catch ( Throwable $e )
 		{
 		}
-		$email = (string) $member->email;
-		return [
+		if ( !is_object( $member ) )
+		{
+			$member = \IPS\Member::loggedIn();
+		}
+		return array_merge( [
 			'ip' => static::clientIp(),
-			'username' => (string) $member->name,
-			'email' => $email,
-			'email_domain' => static::emailDomain( $email ),
-			'post_count' => (int) $member->member_posts,
-			'account_age_seconds' => max( 0, time() - (int) $member->joined ),
 			'user_agent' => (string) ( Request::i()->userAgent() ?? '' ),
 			'content' => $text,
 			'links' => static::extractLinks( $text ),
-		];
+		], static::contentMemberIdentityPayload( $member ) );
 	}
 
 	public static function health( ?int $timeoutOverride = null ): ?array
