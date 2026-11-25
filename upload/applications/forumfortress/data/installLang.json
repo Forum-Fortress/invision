@@ -34,7 +34,7 @@
     "ff_registration_block_action_reject": "Mark rejected",
     "ff_registration_block_action_delete": "Delete account",
     "ff_trusted_proxies": "Trusted reverse proxies",
-    "ff_trusted_proxies_desc": "Optional comma-separated proxy IP addresses or CIDR ranges. Forwarded client IP headers are ignored unless the direct connection comes from this list.",
+    "ff_trusted_proxies_desc": "Optional comma-separated proxy IP addresses or CIDR ranges. With this field blank, Forum Fortress checks forwarding headers for local or reserved connections. Enter addresses to restrict fallback to those proxies.",
     "ff_debug_log": "Enable debug log",
     "ff_debug_log_desc": "Write Forum Fortress API request failures to the IPS logs.",
     "ff_api_key": "Stored API key",

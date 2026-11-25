@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.4 - 2026-11-25
+
+- Report the visitor IP automatically behind reverse proxies that forward it.
+
 ## 1.4.3 - 2026-11-23
 
 - Check each registration once and treat completion of a social login account as registration.

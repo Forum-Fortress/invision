@@ -3,7 +3,9 @@
 namespace IPS\forumfortress\Api;
 
 require_once __DIR__ . '/FfApiResilience.php';
+require_once __DIR__ . '/ClientIp.php';
 
+use ForumFortress\Proxy\ClientIp;
 use IPS\Application;
 use IPS\core\Approval;
 use IPS\Db;
@@ -53,7 +55,7 @@ if ( !defined( '\IPS\SUITE_UNIQUE_KEY' ) )
 class Client
 {
 	public const PLATFORM = 'invision';
-	public const PLUGIN_VERSION = '1.4.3';
+	public const PLUGIN_VERSION = '1.4.4';
 	public const CONTROL_PLANE_BASE_URL = 'https://api.ffapi.net';
 	/** Minimum seconds between full hourly sync runs (task + HTTP traffic share this gate). */
 	protected const HOURLY_SYNC_MIN_INTERVAL = 540;
@@ -705,98 +707,22 @@ class Client
 		return \FfApiResilience::normaliseDomain( static::stripHostPort( (string) $fallback ) );
 	}
 
-	/**
-	 * Resolve the client IP without trusting public forwarding headers. XFF is
-	 * used only when REMOTE_ADDR matches an explicitly configured proxy/CIDR.
-	 */
 	public static function clientIp(): string
 	{
-		$remote = trim( (string) ( $_SERVER['REMOTE_ADDR'] ?? '' ) );
-		if ( filter_var( $remote, FILTER_VALIDATE_IP ) === FALSE )
-		{
-			return '0.0.0.0';
-		}
-		$trusted = array_values( array_filter( array_map( 'trim', explode( ',', (string) ( Settings::i()->ff_trusted_proxies ?? '' ) ) ) ) );
-		if ( !$trusted || !static::ipMatchesAnyRange( $remote, $trusted ) )
-		{
-			return $remote;
-		}
-
-		$chain = [];
-		foreach ( explode( ',', (string) ( $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '' ) ) as $candidate )
-		{
-			$candidate = trim( $candidate );
-			if ( filter_var( $candidate, FILTER_VALIDATE_IP ) !== FALSE )
-			{
-				$chain[] = $candidate;
-			}
-		}
-		$chain[] = $remote;
-		for ( $index = count( $chain ) - 1; $index >= 0; $index-- )
-		{
-			if ( !static::ipMatchesAnyRange( $chain[ $index ], $trusted ) )
-			{
-				return $chain[ $index ];
-			}
-		}
-		return $chain[0] ?? $remote;
+		$trusted = (string) ( Settings::i()->ff_trusted_proxies ?? '' );
+		return ClientIp::resolve( Request::i()->ipAddress(), $_SERVER, $trusted ) ?: '0.0.0.0';
 	}
 
 	public static function validateTrustedProxies( string $value ): void
 	{
-		foreach ( array_filter( array_map( 'trim', explode( ',', $value ) ) ) as $range )
+		try
 		{
-			[ $network, $prefix ] = array_pad( explode( '/', $range, 2 ), 2, NULL );
-			$packed = @inet_pton( trim( (string) $network ) );
-			$maximum = $packed === FALSE ? 0 : strlen( $packed ) * 8;
-			if (
-				$packed === FALSE
-				|| ( $prefix !== NULL && ( !ctype_digit( $prefix ) || (int) $prefix > $maximum ) )
-			)
-			{
-				throw new \DomainException( 'forumfortress_invalid_trusted_proxy' );
-			}
+			ClientIp::parseTrustedProxies( $value );
 		}
-	}
-
-	/** @param list<string> $ranges */
-	protected static function ipMatchesAnyRange( string $ip, array $ranges ): bool
-	{
-		$packedIp = @inet_pton( $ip );
-		if ( $packedIp === FALSE )
+		catch ( \InvalidArgumentException $exception )
 		{
-			return FALSE;
+			throw new \DomainException( 'forumfortress_invalid_trusted_proxy', 0, $exception );
 		}
-		foreach ( $ranges as $range )
-		{
-			[ $network, $prefix ] = array_pad( explode( '/', $range, 2 ), 2, NULL );
-			$packedNetwork = @inet_pton( trim( (string) $network ) );
-			if ( $packedNetwork === FALSE || strlen( $packedNetwork ) !== strlen( $packedIp ) )
-			{
-				continue;
-			}
-			$bits = $prefix === NULL ? strlen( $packedIp ) * 8 : (int) $prefix;
-			if ( $bits < 0 || $bits > strlen( $packedIp ) * 8 )
-			{
-				continue;
-			}
-			$bytes = intdiv( $bits, 8 );
-			$remainder = $bits % 8;
-			if ( substr( $packedIp, 0, $bytes ) !== substr( $packedNetwork, 0, $bytes ) )
-			{
-				continue;
-			}
-			if ( $remainder > 0 )
-			{
-				$mask = ( 0xFF << ( 8 - $remainder ) ) & 0xFF;
-				if ( ( ord( $packedIp[ $bytes ] ) & $mask ) !== ( ord( $packedNetwork[ $bytes ] ) & $mask ) )
-				{
-					continue;
-				}
-			}
-			return TRUE;
-		}
-		return FALSE;
 	}
 
 	protected static function bootstrapDomain(): string
